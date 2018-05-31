@@ -11,22 +11,25 @@
 typedef double costType;
 constexpr static costType cost_MAX = DBL_MAX;
 
-template<typename instanceType>
+template<typename instanceType, typename predictType>
 class CostMetric {
 public:
 	virtual ~CostMetric() { }
 	virtual void passInstance(instanceType instance) = 0;
 	virtual costType costFunction() = 0;
+	virtual bool stop(predictType &value) = 0;
 };
 
-template<typename instanceType, unsigned nInstances>
-class SDR : public CostMetric<instanceType> { // Standard Deviation Reduction
+template<typename instanceType, typename predictType>
+class SDR : public CostMetric<instanceType, predictType> { // Standard Deviation Reduction
 	enum { esq, dir };
 	enum { sum_xi_squared, sum_xi };
-	double auxStructure[2][2];
+	unsigned cardinality;
 	unsigned countPasses;
+	double auxStructure[2][2];
 public:
-	SDR(instanceType ds[nInstances]) : auxStructure { 0 }, countPasses(0) {
+	SDR(instanceType ds[], unsigned nInstances)
+: cardinality(nInstances), countPasses(0), auxStructure { 0 } {
 		for(unsigned index = 0; index < nInstances; ++index) {
 			instanceType &instance = ds[index];
 			int squared = instance.value() * instance.value();
@@ -44,26 +47,35 @@ public:
 		this->countPasses++;
 	}
 	costType costFunction() override {
-		unsigned count[] = { this->countPasses, nInstances-this->countPasses };
+		unsigned count[] = { this->countPasses, this->cardinality-this->countPasses };
 		double retorno = 0;
 		for(unsigned pos = 0; pos < 2; ++pos) {
 			double average = auxStructure[pos][sum_xi] / count[pos];
 			retorno +=	(auxStructure[pos][sum_xi_squared] +
 						-2 * auxStructure[pos][sum_xi] * average +
 						this->countPasses * (average * average) ) *
-						count[pos] / nInstances;
+						count[pos] / this->cardinality;
 		}
 		return retorno;
 	}
+	bool stop(predictType &value) override {
+		if(this->cardinality == 1) {
+			value = this->auxStructure[dir][sum_xi] / this->cardinality;
+			return true;
+		}
+		return false;
+	}
 };
 
-template<typename instanceType, unsigned nClasses, unsigned nInstances>
-class GiniImpurity : public CostMetric<instanceType> {
+template<typename instanceType, typename predictType, unsigned nClasses>
+class GiniImpurity : public CostMetric<instanceType, predictType> {
 	enum { esq, dir };
-	int auxStructure[2][nClasses];
+	unsigned cardinality;
 	unsigned countPasses;
+	int auxStructure[2][nClasses];
 public:
-	GiniImpurity(instanceType ds[nInstances]) : auxStructure { 0 }, countPasses(0) {
+	GiniImpurity(instanceType ds[], unsigned nInstances)
+: cardinality(nInstances), countPasses(0), auxStructure { 0 } {
 		for(unsigned index = 0; index < nInstances; ++index) {
 			instanceType &instance = ds[index];
 			this->auxStructure[dir][instance.classe()]++;
@@ -76,6 +88,13 @@ public:
 	}
 	costType costFunction() override {
 		return 0;
+	}
+	bool stop(predictType &value) override {
+		if(this->cardinality == 1) {
+			// value = ...
+			return true;
+		}
+		return false;
 	}
 };
 
