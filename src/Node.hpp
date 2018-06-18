@@ -7,8 +7,10 @@
 
 #ifndef NODE_HPP_
 #define NODE_HPP_
-#include <float.h> // DBL_MAX
 
+#include <float.h> // DBL_MAX
+#include <iostream>
+using std::ostream;
 #include "CostMetric.hpp"
 #include "utils.hpp"
 
@@ -17,34 +19,59 @@ class Node final {
 protected:
 	struct AbstractComparator {
 		virtual ~AbstractComparator() { }
-		virtual bool operator >=(instanceType instance) = 0;
-		virtual bool operator !=(instanceType instance) = 0;
+		virtual bool operator > (instanceType instance) const = 0;
+		virtual bool operator !=(instanceType instance) const = 0;
+		virtual void operator >>(ostream& out) const = 0;
+		friend ostream& operator <<(ostream& out, const AbstractComparator& self) {
+			self >> out;
+			return out;
+		}
 	};
 	template<typename attrType>
 	struct Comparator final : AbstractComparator {
 		attrType value;
 		attrType (*getAttr)(instanceType);
 		Comparator(attrType (*g)(instanceType)) : getAttr(g) { }
-		bool operator >=(instanceType instance) override {
-			return this->value >= this->getAttr(instance);
+		void operator = (instanceType instance) {
+			this->value = this->getAttr(instance);
 		}
-		bool operator !=(instanceType instance) override {
+		bool operator > (instanceType instance) const override {
+			return this->value > this->getAttr(instance);
+		}
+		bool operator !=(instanceType instance) const override {
 			return this->value != this->getAttr(instance);
 		}
-		void operator =(instanceType instance) {
-			this->value = this->getAttr(instance);
+		void operator >>(ostream& out) const override {
+			out << (unsigned int*) this->getAttr <<  " < " << this->value << '\n';
 		}
 	};
 	struct Split final {
-		unsigned leftCardinality;
-		costType cost;
-		AbstractComparator *comparator;
+		unsigned _leftCardinality;
+		costType _cost;
+		AbstractComparator *_comparator;
+		Split() : _leftCardinality(0), _cost(cost_MAX), _comparator(nullptr) { }
 	};
 private:
 	Node<costMetric, instanceType, predictType> *left, *right;
 	AbstractComparator *comparator;
 	predictType value;
 public:
+	friend ostream& operator <<(ostream& out, const Node& self) {
+		static unsigned tabs = -1;
+		++tabs;
+		if(self.comparator == nullptr) {
+			for(unsigned i = 0; i < tabs; ++i) out << "  ";
+			out << self.value << '\n';
+		} else {
+			out << *self.right;
+			for(unsigned i = 0; i < tabs; ++i) out << "  ";
+			out << *self.comparator;
+			out << *self.left;
+		}
+		--tabs;
+		return out;
+	}
+
 	~Node() {
 		delete comparator;
 		delete left;
@@ -56,6 +83,9 @@ public:
 			unsigned cardinality,
 			attrType_ (*...getAttr_)(instanceType));
 
+	predictType predict(instanceType ds);
+
+private:
 	template<typename attrType, typename ...attrType_>
 	Split testSplit(
 			instanceType ds[],
@@ -73,6 +103,16 @@ public:
 };
 
 template<class costMetric, typename instanceType, typename predictType>
+predictType Node<costMetric, instanceType, predictType>::predict(instanceType instance) {
+	if(this->comparator == nullptr) {
+		return this->value;
+	}
+	return (*this->comparator) > instance ?
+			this->left->predict(instance) :
+			this->right->predict(instance);
+}
+
+template<class costMetric, typename instanceType, typename predictType>
 template<typename ...attrType_>
 Node<costMetric, instanceType, predictType>::Node(
 		instanceType ds[],
@@ -80,18 +120,22 @@ Node<costMetric, instanceType, predictType>::Node(
 		attrType_ (*...getAttr_)(instanceType)
 ){
 	costMetric auxStruct = costMetric(ds, cardinality);
-	if(auxStruct.stop(this->value)) {
-		this->comparator = nullptr;
-		this->left = nullptr;
-		this->right = nullptr;
-	} else {
+	if(! auxStruct.stop(this->value)) {
 		Split sp = this->testSplit<attrType_...>(ds, cardinality, auxStruct, getAttr_...);
-		this->comparator = sp.comparator;
-		this->left  = new Node<costMetric, instanceType, predictType>(
-				ds, sp.leftCardinality, getAttr_...);
-		this->right = new Node<costMetric, instanceType, predictType>(
-				&ds[sp.leftCardinality], cardinality - sp.leftCardinality, getAttr_...);
+		if(cardinality > sp._leftCardinality) { // && sp.leftCardinality > 0
+			this->comparator = sp._comparator;
+			this->left  = new Node<costMetric, instanceType, predictType>(
+					ds, sp._leftCardinality, getAttr_...);
+			this->right = new Node<costMetric, instanceType, predictType>(
+					&ds[sp._leftCardinality], cardinality - sp._leftCardinality, getAttr_...);
+			return;
+		} else {
+			delete sp._comparator;
+		}
 	}
+	this->comparator = nullptr;
+	this->left = nullptr;
+	this->right = nullptr;
 }
 
 template<class costMetric, typename instanceType, typename predictType>
@@ -105,11 +149,12 @@ typename Node<costMetric, instanceType, predictType>::Split Node<costMetric, ins
 ) {
 	Split sp = this->testSplit<attrType>(ds, cardinality, auxStruct, getAttr);
 	Split sp_pack = this->testSplit<attrType_...>(ds, cardinality, auxStruct, getAttr_...);
-	if(sp.cost < sp_pack.cost){
-		delete sp_pack.comparator;
+	if(sp._cost < sp_pack._cost){
+		delete sp_pack._comparator;
+		quicksort(ds, cardinality, getAttr);
 		return sp;
 	} else {
-		delete sp.comparator;
+		delete sp._comparator;
 		return sp_pack;
 	}
 }
@@ -124,10 +169,11 @@ typename Node<costMetric, instanceType, predictType>::Split Node<costMetric, ins
 ) {
 	quicksort(ds, cardinality, getAttr);
 	Split retorno;
+	retorno._leftCardinality = cardinality;
 	Comparator<attrType> retorno_comparator(getAttr),
 			comparator(getAttr);
 	comparator = ds[0];
-	costType cost = cost_MAX;
+	costType cost;
 	for(unsigned index = 0; index < cardinality; index++) {
 		instanceType &instance = ds[index];
 		// Procura-se o próximo valor que será o divisor do dataset
@@ -135,9 +181,9 @@ typename Node<costMetric, instanceType, predictType>::Split Node<costMetric, ins
 		if(comparator != instance) {			// se o valor mudar
 			comparator = instance;				// tem-se um novo divisor do dataset
 			cost = auxStruct.costFunction();	// calcula-se o custo
-			if(cost < retorno.cost) {			// se o custo for menor
-				retorno.cost = cost;			// guarda o novo valor de divisão
-				retorno.leftCardinality = index;
+			if(cost < retorno._cost) {			// se o custo for menor
+				retorno._cost = cost;			// guarda o novo valor de divisão
+				retorno._leftCardinality = index;
 				retorno_comparator = comparator;
 			}
 			// a partir de agora, 'instance' fará parte do conjunto esquerdo
@@ -145,8 +191,9 @@ typename Node<costMetric, instanceType, predictType>::Split Node<costMetric, ins
 		// move o elemento para o conjunto esquerdo
 		auxStruct.passInstance(instance);
 	}
-	retorno.comparator = new Comparator<attrType>(retorno_comparator);
+	retorno._comparator = new Comparator<attrType>(retorno_comparator);
 	return retorno;
 }
+
 
 #endif /* NODE_HPP_ */
