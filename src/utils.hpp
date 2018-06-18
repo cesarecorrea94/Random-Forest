@@ -8,7 +8,12 @@
 #ifndef UTILS_HPP_
 #define UTILS_HPP_
 
-#define swap(a,b) { auto tmp = a; a = b; b = tmp; }
+template<typename type>
+void swap(type &a, type &b) {
+	type tmp = a;
+	a = b;
+	b = tmp;
+}
 
 template<typename instanceType, typename attrType>
 void quicksort(
